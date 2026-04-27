@@ -188,22 +188,21 @@ function Render-Schema($schema, $api, $indent, [System.Collections.Generic.HashS
 }
 
 function Get-SchemaDocLines([string]$refStr, $api) {
-    $lines = @()
+    $lines = [System.Collections.Generic.List[string]]::new()
     $schemaName = $refStr -replace '^#/components/schemas/', ''
     $resolved = Resolve-Ref $refStr $api
-    if ($null -eq $resolved) { $lines += "  Schema: $schemaName (unresolved)"; return $lines }
+    if ($null -eq $resolved) { $lines.Add("  Schema: $schemaName (unresolved)"); return $lines }
     $desc = if ($resolved -is [System.Collections.IDictionary] -and $resolved.ContainsKey('description')) {
         ' - ' + [string]$resolved['description'] } else { '' }
-    $lines += "  Schema: $schemaName$desc"
+    $lines.Add("  Schema: $schemaName$desc")
     $seen = [System.Collections.Generic.HashSet[string]]::new()
     [void]$seen.Add($refStr)
-    $propLines = Render-Schema $resolved $api 1 $seen
-    foreach ($l in $propLines) { $lines += "  $l" }
+    foreach ($l in (Render-Schema $resolved $api 1 $seen)) { $lines.Add("  $l") }
     return $lines
 }
 
 function Convert-ToMarkdownListLines($lines) {
-    $md = @()
+    $md = [System.Collections.Generic.List[string]]::new()
     foreach ($line in @($lines)) {
         if ($null -eq $line) { continue }
         $raw = [string]$line
@@ -212,7 +211,7 @@ function Convert-ToMarkdownListLines($lines) {
         $leading = $raw.Length - $raw.TrimStart().Length
         $level = [int][Math]::Floor($leading / 2)
         if ($level -lt 0) { $level = 0 }
-        $md += (('  ' * $level) + '- ' + $trim)
+        $md.Add(('  ' * $level) + '- ' + $trim)
     }
     return $md
 }
@@ -463,76 +462,80 @@ function Get-ContentExampleText($contentObj, $api) {
     return ''
 }
 
+function Build-RequestLines([string]$url, [string]$method, [string]$bodyMode, [bool]$hasBody, [string[]]$bodyJsonLines, $pathParamLines, $queryParamLines, $headersBlock) {
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('  request: {')
+    $lines.Add("    url: $url")
+    $lines.Add("    method: $method")
+    if ($hasBody) { $lines.Add("    mode: $bodyMode") } else { $lines.Add('    mode: none') }
+    if ($pathParamLines.Count -gt 0) {
+        $lines.Add('    params:path: {')
+        foreach ($line in $pathParamLines) { $lines.Add("    $line") }
+        $lines.Add('    }')
+    }
+    if ($queryParamLines.Count -gt 0) {
+        $lines.Add('    params:query: {')
+        foreach ($line in $queryParamLines) { $lines.Add("    $line") }
+        $lines.Add('    }')
+    }
+    if ($headersBlock.Count -gt 0) {
+        $lines.Add('    ')
+        $lines.Add('    headers: {')
+        foreach ($h in $headersBlock) { $lines.Add("    $h") }
+        $lines.Add('    }')
+    }
+    if ($hasBody) {
+        $lines.Add('    ')
+        if ($bodyMode -eq 'json') {
+            $lines.Add('    body:json: {')
+            foreach ($line in $bodyJsonLines) { $lines.Add("      $line") }
+            $lines.Add('    }')
+        } else {
+            $lines.Add('    body:text: {')
+            $lines.Add("      '''")
+            foreach ($line in $bodyJsonLines) { $lines.Add("      $line") }
+            $lines.Add("      '''")
+            $lines.Add('    }')
+        }
+    }
+    $lines.Add('  }')
+    return $lines
+}
+
 function Get-ResponseExampleBlocks($responses, $api, [string]$url, [string]$method, [string]$bodyMode, [bool]$hasBody, [string]$bodyJson, $pathParamLines, $queryParamLines, $headersBlock) {
     $blocks = @()
     if (-not $responses) { return $blocks }
 
     $requestAcceptIsJson = $false
     foreach ($h in @($headersBlock)) {
-        if ([string]$h -match '^\s*Accept:\s*application/json') {
-            $requestAcceptIsJson = $true
-            break
-        }
+        if ([string]$h -match '^\s*Accept:\s*application/json') { $requestAcceptIsJson = $true; break }
     }
 
-    foreach ($resp in (Get-Props $responses)) {
-        $status = [string]$resp.Name
-        $respValue = $resp.Value
-        $name = if ($respValue.description) { ([string]$respValue.description).Trim() } else { "Status $status" }
-        if (-not $name) { $name = "Status $status" }
-        $reason = Get-ReasonPhrase $status
+    $bodyJsonLines = [string[]]@($bodyJson -split "`r?`n")
 
-        $contentProps = @()
-        if ($respValue.content) { $contentProps = @(Get-Props $respValue.content) }
+    foreach ($resp in (Get-Props $responses)) {
+        $status    = [string]$resp.Name
+        $respValue = $resp.Value
+        $name      = if ($respValue.description) { ([string]$respValue.description).Trim() } else { "Status $status" }
+        if (-not $name) { $name = "Status $status" }
+        $reason    = Get-ReasonPhrase $status
+
+        $contentProps = if ($respValue.content) { @(Get-Props $respValue.content) } else { @() }
 
         if ($contentProps.Count -eq 0) {
-            $example = @()
-            $example += 'example {'
-            $example += ("  name: " + (Quote-BruString $name))
-            $example += '  '
-            $example += '  request: {'
-            $example += "    url: $url"
-            $example += "    method: $method"
-            if ($hasBody) { $example += "    mode: $bodyMode" } else { $example += '    mode: none' }
-            if ($pathParamLines.Count -gt 0) {
-                $example += '    params:path: {'
-                foreach ($line in $pathParamLines) { $example += "    $line" }
-                $example += '    }'
-            }
-            if ($queryParamLines.Count -gt 0) {
-                $example += '    params:query: {'
-                foreach ($line in $queryParamLines) { $example += "    $line" }
-                $example += '    }'
-            }
-            if ($headersBlock.Count -gt 0) {
-                $example += '    '
-                $example += '    headers: {'
-                foreach ($h in $headersBlock) { $example += "    $h" }
-                $example += '    }'
-            }
-            if ($hasBody) {
-                $example += '    '
-                if ($bodyMode -eq 'json') {
-                    $example += '    body:json: {'
-                    foreach ($line in ($bodyJson -split "`r?`n")) { $example += "      $line" }
-                    $example += '    }'
-                } else {
-                    $example += '    body:text: {'
-                    $example += "      '''"
-                    foreach ($line in ($bodyJson -split "`r?`n")) { $example += "      $line" }
-                    $example += "      '''"
-                    $example += '    }'
-                }
-            }
-            $example += '  }'
-            $example += '  '
-            $example += '  response: {'
-            $example += '    status: {'
-            $example += "      code: $status"
-            $example += "      text: $reason"
-            $example += '    }'
-            $example += '  }'
-            $example += '}'
+            $example = [System.Collections.Generic.List[string]]::new()
+            $example.Add('example {')
+            $example.Add("  name: " + (Quote-BruString $name))
+            $example.Add('  ')
+            $example.AddRange([string[]](Build-RequestLines $url $method $bodyMode $hasBody $bodyJsonLines $pathParamLines $queryParamLines $headersBlock))
+            $example.Add('  ')
+            $example.Add('  response: {')
+            $example.Add('    status: {')
+            $example.Add("      code: $status")
+            $example.Add("      text: $reason")
+            $example.Add('    }')
+            $example.Add('  }')
+            $example.Add('}')
             $blocks += ,($example -join "`n")
             continue
         }
@@ -541,69 +544,34 @@ function Get-ResponseExampleBlocks($responses, $api, [string]$url, [string]$meth
             $mediaType = [string]$ct.Name
             if ($requestAcceptIsJson -and $mediaType -match '^application/xml') { continue }
             $exampleText = Get-ContentExampleText $ct.Value $api
-            $respMode = if ($mediaType -like '*json*') { 'json' } else { 'text' }
-            if (-not $exampleText) {
-                if ($respMode -eq 'json') { $exampleText = '{}' } else { $exampleText = '' }
-            }
+            $respMode    = if ($mediaType -like '*json*') { 'json' } else { 'text' }
+            if (-not $exampleText) { $exampleText = if ($respMode -eq 'json') { '{}' } else { '' } }
+            $exampleTextLines = [string[]]@($exampleText -split "`r?`n")
 
-            $example = @()
-            $example += 'example {'
-            $example += ("  name: " + (Quote-BruString $name))
-            $example += '  '
-            $example += '  request: {'
-            $example += "    url: $url"
-            $example += "    method: $method"
-            if ($hasBody) { $example += "    mode: $bodyMode" } else { $example += '    mode: none' }
-            if ($pathParamLines.Count -gt 0) {
-                $example += '    params:path: {'
-                foreach ($line in $pathParamLines) { $example += "    $line" }
-                $example += '    }'
-            }
-            if ($queryParamLines.Count -gt 0) {
-                $example += '    params:query: {'
-                foreach ($line in $queryParamLines) { $example += "    $line" }
-                $example += '    }'
-            }
-            if ($headersBlock.Count -gt 0) {
-                $example += '    '
-                $example += '    headers: {'
-                foreach ($h in $headersBlock) { $example += "    $h" }
-                $example += '    }'
-            }
-            if ($hasBody) {
-                $example += '    '
-                if ($bodyMode -eq 'json') {
-                    $example += '    body:json: {'
-                    foreach ($line in ($bodyJson -split "`r?`n")) { $example += "      $line" }
-                    $example += '    }'
-                } else {
-                    $example += '    body:text: {'
-                    $example += "      '''"
-                    foreach ($line in ($bodyJson -split "`r?`n")) { $example += "      $line" }
-                    $example += "      '''"
-                    $example += '    }'
-                }
-            }
-            $example += '  }'
-            $example += '  '
-            $example += '  response: {'
-            $example += '    headers: {'
-            $example += "      Content-Type: $mediaType"
-            $example += '    }'
-            $example += '  '
-            $example += '    status: {'
-            $example += "      code: $status"
-            $example += "      text: $reason"
-            $example += '    }'
-            $example += '  '
-            $example += '    body: {'
-            $example += "      type: $respMode"
-            $example += "      content: '''"
-            foreach ($line in ($exampleText -split "`r?`n")) { $example += "      $line" }
-            $example += "      '''"
-            $example += '    }'
-            $example += '  }'
-            $example += '}'
+            $example = [System.Collections.Generic.List[string]]::new()
+            $example.Add('example {')
+            $example.Add("  name: " + (Quote-BruString $name))
+            $example.Add('  ')
+            $example.AddRange([string[]](Build-RequestLines $url $method $bodyMode $hasBody $bodyJsonLines $pathParamLines $queryParamLines $headersBlock))
+            $example.Add('  ')
+            $example.Add('  response: {')
+            $example.Add('    headers: {')
+            $example.Add("      Content-Type: $mediaType")
+            $example.Add('    }')
+            $example.Add('  ')
+            $example.Add('    status: {')
+            $example.Add("      code: $status")
+            $example.Add("      text: $reason")
+            $example.Add('    }')
+            $example.Add('  ')
+            $example.Add('    body: {')
+            $example.Add("      type: $respMode")
+            $example.Add("      content: '''")
+            foreach ($line in $exampleTextLines) { $example.Add("      $line") }
+            $example.Add("      '''")
+            $example.Add('    }')
+            $example.Add('  }')
+            $example.Add('}')
             $blocks += ,($example -join "`n")
         }
     }
@@ -705,18 +673,6 @@ function Convert-OpenApiToBruno {
                 $reqRefs = $reqRefs | Where-Object { $_ } | Sort-Object -Unique
             }
 
-            $respRefs = @()
-            if ($op.responses) {
-                foreach ($resp in (Get-Props $op.responses)) {
-                    if ($resp.Value.content) {
-                        foreach ($ct in (Get-Props $resp.Value.content)) {
-                            if ($ct.Value.schema) { $respRefs += Get-SchemaRefs $ct.Value.schema }
-                        }
-                    }
-                }
-                $respRefs = $respRefs | Where-Object { $_ } | Sort-Object -Unique
-            }
-
             $bodyJson = ''
             if ($op.requestBody -and $op.requestBody.content) {
                 $ctProps = Get-Props $op.requestBody.content
@@ -726,6 +682,7 @@ function Convert-OpenApiToBruno {
                 }
             }
             if (-not $bodyJson) { $bodyJson = '{}' }
+            $bodyJsonLines = [string[]]@($bodyJson -split "`r?`n")
 
             $allParams = @()
             if ($pathItem.parameters) { $allParams += @($pathItem.parameters) }
@@ -783,60 +740,60 @@ function Convert-OpenApiToBruno {
             }
             $exampleBlocks = Get-ResponseExampleBlocks -responses $op.responses -api $api -url $url -method $method -bodyMode $bodyMode -hasBody $hasBody -bodyJson $bodyJson -pathParamLines $pathParamLines -queryParamLines $queryParamLines -headersBlock $headersBlock
 
-            $bru = @()
-            $bru += 'meta {'
-            $bru += "  name: $opName"
-            $bru += '  type: http'
-            $bru += "  seq: $seq"
-            $bru += '}'
-            $bru += ''
-            $bru += "$methodBlock {"
-            $bru += "  url: $url"
-            $bru += "  body: $bodyMode"
-            $bru += '  auth: inherit'
-            $bru += '}'
-            $bru += ''
+            $bru = [System.Collections.Generic.List[string]]::new()
+            $bru.Add('meta {')
+            $bru.Add("  name: $opName")
+            $bru.Add('  type: http')
+            $bru.Add("  seq: $seq")
+            $bru.Add('}')
+            $bru.Add('')
+            $bru.Add("$methodBlock {")
+            $bru.Add("  url: $url")
+            $bru.Add("  body: $bodyMode")
+            $bru.Add('  auth: inherit')
+            $bru.Add('}')
+            $bru.Add('')
             if ($pathParamLines.Count -gt 0) {
-                $bru += 'params:path {'
-                $bru += $pathParamLines
-                $bru += '}'
-                $bru += ''
+                $bru.Add('params:path {')
+                $bru.AddRange([string[]]$pathParamLines)
+                $bru.Add('}')
+                $bru.Add('')
             }
             if ($queryParamLines.Count -gt 0) {
-                $bru += 'params:query {'
-                $bru += $queryParamLines
-                $bru += '}'
-                $bru += ''
+                $bru.Add('params:query {')
+                $bru.AddRange([string[]]$queryParamLines)
+                $bru.Add('}')
+                $bru.Add('')
             }
             if ($headersText) {
-                $bru += 'headers {'
-                $bru += $headersText
-                $bru += '}'
-                $bru += ''
+                $bru.Add('headers {')
+                $bru.Add($headersText)
+                $bru.Add('}')
+                $bru.Add('')
             }
             if ($hasBody) {
                 if ($bodyMode -eq 'json') {
-                    $bru += 'body:json {'
-                    foreach ($line in ($bodyJson -split "`r?`n")) { $bru += "  $line" }
-                    $bru += '}'
+                    $bru.Add('body:json {')
+                    foreach ($line in $bodyJsonLines) { $bru.Add("  $line") }
+                    $bru.Add('}')
                 } else {
-                    $bru += 'body:text {'
-                    $bru += '  '
-                    $bru += '}'
+                    $bru.Add('body:text {')
+                    $bru.Add('  ')
+                    $bru.Add('}')
                 }
-                $bru += ''
+                $bru.Add('')
             }
-            $bru += 'settings {'
-            $bru += '  encodeUrl: true'
-            $bru += '}'
-            $bru += ''
-            $bru += 'docs {'
-            foreach ($line in ($docLines -join "`n") -split "`r?`n") { $bru += "  $line" }
-            $bru += '}'
+            $bru.Add('settings {')
+            $bru.Add('  encodeUrl: true')
+            $bru.Add('}')
+            $bru.Add('')
+            $bru.Add('docs {')
+            foreach ($line in ($docLines -join "`n") -split "`r?`n") { $bru.Add("  $line") }
+            $bru.Add('}')
 
             foreach ($exampleBlock in $exampleBlocks) {
-                $bru += ''
-                foreach ($line in ($exampleBlock -split "`r?`n")) { $bru += $line }
+                $bru.Add('')
+                foreach ($line in ($exampleBlock -split "`r?`n")) { $bru.Add($line) }
             }
 
             [System.IO.File]::WriteAllText($bruPath, ($bru -join "`n"), [System.Text.UTF8Encoding]::new($false))
