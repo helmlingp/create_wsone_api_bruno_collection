@@ -21,20 +21,20 @@ The script:
 
 ## Script
 
-- `create-bruno copy.ps1`
+- `create-bruno.ps1`
 
 ## Usage
 
 Run with prompts:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\create-bruno copy.ps1
+powershell.exe -ExecutionPolicy Bypass -File .\create-bruno.ps1
 ```
 
 Run with parameters:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\create-bruno copy.ps1 `
+powershell.exe -ExecutionPolicy Bypass -File .\create-bruno.ps1 `
   -clientId "YOUR_CLIENT_ID" `
   -clientSecret "YOUR_CLIENT_SECRET" `
   -tokenUrl "https://your-oauth-host/connect/token" `
