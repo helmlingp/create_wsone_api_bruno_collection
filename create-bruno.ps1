@@ -719,12 +719,55 @@ function Convert-OpenApiToBruno {
                 $descText = ([string]$op.description) -replace '(?m)^(\s*)[\*\-]\s+', '$1'
                 $docLines += (Escape-Braces $descText)
             }
+
+            # Parameters
+            $paramDocLines = Get-ParameterDocLines $mergedParams $api
+            if ($paramDocLines.Count -gt 0) {
+                $docLines += ''
+                $docLines += '### Parameters'
+                $docLines += $paramDocLines
+            }
+
             if ($reqRefs.Count -gt 0) {
                 $docLines += ''
-                $docLines += '### Request Body'
+                $docLines += '### Request Body Schema'
                 foreach ($r in $reqRefs) {
                     $docLines += Convert-ToMarkdownListLines (Get-SchemaDocLines $r $api)
                 }
+            }
+
+            # Response schemas
+            $respSchemaLines = @()
+            if ($op.responses) {
+                $seenRespRefs = [System.Collections.Generic.HashSet[string]]::new()
+                foreach ($resp in (Get-Props $op.responses)) {
+                    $r = $resp.Value
+                    if ($r.content) {
+                        foreach ($ct in (Get-Props $r.content)) {
+                            if ($ct.Value -and $ct.Value.schema) {
+                                $respRefs = Get-SchemaRefs $ct.Value.schema
+                                foreach ($rRef in ($respRefs | Where-Object { $_ } | Sort-Object -Unique)) {
+                                    if ($seenRespRefs.Add($rRef)) {
+                                        $respSchemaLines += Convert-ToMarkdownListLines (Get-SchemaDocLines $rRef $api)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if ($respSchemaLines.Count -gt 0) {
+                $docLines += ''
+                $docLines += '### Response Schema'
+                $docLines += $respSchemaLines
+            }
+
+            # Response status codes
+            $respDocLines = Get-ResponseDocLines $op.responses $api
+            if ($respDocLines.Count -gt 0) {
+                $docLines += ''
+                $docLines += '### Responses'
+                $docLines += $respDocLines
             }
 
             $methodBlock  = $method.ToLowerInvariant()
